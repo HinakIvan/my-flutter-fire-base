@@ -18,7 +18,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _auth = FirebaseAuth.instance;
   late String messageText;
 
-  // Firebase loggedInUser;
+  // late Firebase loggedInUser;
 
 //   void getCurrentUser()async{try{
 //     final user= await _auth.currentUser();
@@ -148,7 +148,11 @@ class MessageBubble extends StatelessWidget {
       child:
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: <Widget>[
         Material(
-          borderRadius: BorderRadius.circular(50.0),
+          borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(30.0),
+              bottomLeft: Radius.circular(30),
+              bottomRight: Radius.circular(30),
+              topRight: Radius.circular(5)),
           elevation: 5.0,
           color: Colors.lightBlueAccent,
           child: Padding(

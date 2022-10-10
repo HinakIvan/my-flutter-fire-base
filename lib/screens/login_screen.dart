@@ -28,9 +28,11 @@ class _LoginScreenState extends State<LoginScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Container(
-                height: 200.0,
-                child: Image.asset('images/cartoon-lightning-bolt-symbol-hand-drawn-illustration-retro-style-vector-available-37012524.jpg'),
+              Flexible(
+                child: Container(
+                  height: 200.0,
+                  child: Image.asset('images/cartoon-lightning-bolt-symbol-hand-drawn-illustration-retro-style-vector-available-37012524.jpg'),
+                ),
               ),
               SizedBox(
                 height: 48.0,
