@@ -247,9 +247,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return LANGUAGE
 
 async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["lang"] = update.message.text
-    user_languages[update.effective_user.id] = update.message.text
-    lang = context.user_data["lang"]
+    lang = update.message.text
+    if lang not in texts:
+        # Сообщение не является языком → верни пользователя к выбору
+        keyboard = ReplyKeyboardMarkup([languages], resize_keyboard=True)
+        await update.message.reply_text("❗️Пожалуйста, выбери язык из списка:", reply_markup=keyboard)
+        return LANGUAGE
+
+    context.user_data["lang"] = lang
+    user_languages[update.effective_user.id] = lang
     keyboard = ReplyKeyboardMarkup([[texts[lang]["back"]]], resize_keyboard=True)
     await update.message.reply_text(texts[lang]["enter_name"], reply_markup=keyboard)
     return NAME
@@ -388,6 +394,8 @@ async def send_day_before_reminders(app: Application):
                 await app.bot.send_message(user_id, texts[lang]["remind_daybefore"])
                 break
 
+            
+
 
 from telegram.ext import CommandHandler
 from collections import Counter
@@ -406,7 +414,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for style, count in style_counts.items():
         stats += f"{style}: {count} записей\n"
 
-    keyboard = ReplyKeyboardMarkup([["📥 Выгрузить пользователей"], [texts["Русский 🇷🇺"]["home"]]], resize_keyboard=True)
+    keyboard = ReplyKeyboardMarkup(
+    [["📥 Выгрузить пользователей"], ["📋 Все записи по направлениям"], [texts["Русский 🇷🇺"]["home"]]],
+    resize_keyboard=True
+)
     await update.message.reply_text(stats, parse_mode="HTML", reply_markup=keyboard)
     return MAIN_MENU
 
@@ -437,6 +448,33 @@ async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_document(document=output, filename="users.xlsx")
 
+async def show_bookings_by_style(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        return
+
+    # Собираем данные
+    styles_data = {}
+    for uid, bookings in user_bookings.items():
+        chat_data = context.application.chat_data.get(uid, {})
+        name = chat_data.get("name", "Без имени")
+        phone = chat_data.get("phone", "Без номера")
+
+        for booking in bookings:
+            style = booking.split(" – ")[0]
+            entry = f"👤 {name}\n📞 {phone}\n🕓 {booking}"
+            styles_data.setdefault(style, []).append(entry)
+
+    # Отправка сообщений по каждому стилю
+    if not styles_data:
+        await update.message.reply_text("Нет записей.")
+        return
+
+    for style, people in styles_data.items():
+        msg = f"<b>{style}</b>:\n\n" + "\n\n".join(people)
+        await update.message.reply_text(msg, parse_mode="HTML")
+   
+
                
              
 
@@ -448,7 +486,7 @@ app = Application.builder().token("7770514801:AAHuMKFNZ3ljTqs5qN9fcRE4UIAHPXyIbQ
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
     states={
-        LANGUAGE: [MessageHandler(filters.TEXT, choose_language)],
+       LANGUAGE: [MessageHandler(filters.TEXT & (~filters.COMMAND), choose_language)],
         NAME: [MessageHandler(filters.TEXT, get_name)],
         PHONE: [MessageHandler(filters.TEXT | filters.CONTACT, get_phone)],
         MAIN_MENU: [
@@ -469,6 +507,7 @@ conv_handler = ConversationHandler(
 app.add_handler(conv_handler)
 app.add_handler(CommandHandler("admin", admin_panel))
 app.add_handler(MessageHandler(filters.Regex("^📥"), export_users))
+app.add_handler(MessageHandler(filters.Regex("^📋 Все записи по направлениям$"), show_bookings_by_style))
 
 
 scheduler = BackgroundScheduler()
