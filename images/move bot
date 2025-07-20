@@ -4,9 +4,14 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 import asyncio
+import pandas as pd
+from io import BytesIO
 
 LANGUAGE, NAME, PHONE, MAIN_MENU, DIRECTION, SLOT_SELECT, STYLE_INFO, CANCEL_BOOKING = range(8)
 user_bookings = {}
+user_languages = {}
+
+ADMINS = [664012195, 123456789]
 
 languages = ["Русский 🇷🇺", "English 🇬🇧", "Čeština 🇨🇿"]
 
@@ -213,16 +218,25 @@ style_info = {
     # если хочешь — продолжу остальные 5 точно так же.
 }
 
-slot_options = {"Girly Hip-Hop": ["Понедельник 15:00"]}
+slot_options = {
+    "Girly Hip-Hop": ["Monday 15:00", "Wednesday 15:00"],
+    "Jazz Funk": ["Tuesday 18:00", "Thursday 17:00"],
+    "Choreo": ["Friday 17:00"],
+    "Contemporary": ["Wednesday 17:00"],
+    "High Heels": ["Thursday 16:00"],
+    "Frame Up": ["Friday 18:00"],
+    "Mobility & Stretching": ["Tuesday 10:00"],
+    "Morning Flow": ["Monday 09:00"]
+}
 
-def get_next_weekday_date(day_name):
+def get_next_weekday_date(day_name, lang):
+    index = weekday_index.get(day_name, 0)
     today = datetime.today()
-    target_index = weekday_index.get(day_name, 0)
-    current_index = today.weekday()
-    days_ahead = (target_index - current_index + 7) % 7
+    days_ahead = (index - today.weekday() + 7) % 7
     if days_ahead == 0:
         days_ahead = 7
     return (today + timedelta(days=days_ahead)).strftime("%d.%m")
+
 
 
 # === HANDLERS ===
@@ -234,6 +248,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["lang"] = update.message.text
+    user_languages[update.effective_user.id] = update.message.text
     lang = context.user_data["lang"]
     keyboard = ReplyKeyboardMarkup([[texts[lang]["back"]]], resize_keyboard=True)
     await update.message.reply_text(texts[lang]["enter_name"], reply_markup=keyboard)
@@ -278,21 +293,19 @@ async def select_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = []
 
     for slot in slots:
-        try:
-            day_ru, time = slot.split()
-            date = get_next_weekday_date(day_ru)
+        day_en, time = slot.split()
+        date = get_next_weekday_date(day_en, lang)
 
-            # Найдём индекс дня по русскому
-            index = weekday_index.get(day_ru, 0)
-            # Переведём на нужный язык
-            day_localized = localized_days[lang][index]
+        day_index = weekday_index.get(day_en, 0)
+        localized_day = localized_days[lang][day_index]
 
-            buttons.append([f"{style} – {day_localized} {time} ({date})"])
-        except ValueError:
-            continue
+        buttons.append([f"{style} – {localized_day} {time} ({date})"])
 
     buttons.append([texts[lang]["home"]])
-    await update.message.reply_text(texts[lang]["choose_time"], reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
+    await update.message.reply_text(
+        texts[lang]["choose_time"],
+        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    )
     return SLOT_SELECT
 
 
@@ -361,23 +374,76 @@ async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === REMINDERS ===
 
 async def send_weekend_reminders(app: Application):
-    for user_id, bookings in user_bookings.items():
-        chat_data = await app.bot.get_chat(user_id)
-        lang = "Русский 🇷🇺"
+    for user_id in user_bookings:
+        lang = user_languages.get(user_id, "Русский 🇷🇺")
         await app.bot.send_message(user_id, texts[lang]["remind_weekend"])
 
 async def send_day_before_reminders(app: Application):
     tomorrow = datetime.today() + timedelta(days=1)
-    day_name = tomorrow.strftime("%d.%m")
+    date_str = tomorrow.strftime("%d.%m")
     for user_id, bookings in user_bookings.items():
-        for b in bookings:
-            if day_name in b:
-                lang = "Русский 🇷🇺"
+        for booking in bookings:
+            if date_str in booking:
+                lang = user_languages.get(user_id, "Русский 🇷🇺")
                 await app.bot.send_message(user_id, texts[lang]["remind_daybefore"])
+                break
+
+
+from telegram.ext import CommandHandler
+from collections import Counter
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        await update.message.reply_text("У тебя нет доступа к админ-панели.")
+        return
+
+    total_users = len(user_bookings)
+    all_bookings = [b for bookings in user_bookings.values() for b in bookings]
+    style_counts = Counter(b.split(" – ")[0] for b in all_bookings)
+
+    stats = f"📊 <b>Статистика:</b>\nВсего пользователей: {total_users}\n"
+    for style, count in style_counts.items():
+        stats += f"{style}: {count} записей\n"
+
+    keyboard = ReplyKeyboardMarkup([["📥 Выгрузить пользователей"], [texts["Русский 🇷🇺"]["home"]]], resize_keyboard=True)
+    await update.message.reply_text(stats, parse_mode="HTML", reply_markup=keyboard)
+    return MAIN_MENU
+
+import pandas as pd
+from io import BytesIO
+
+async def export_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        return
+
+    rows = []
+    for uid, data in context.application.chat_data.items():
+        name = data.get("name", "")
+        phone = data.get("phone", "")
+        bookings = user_bookings.get(uid, [])
+        for booking in bookings:
+            rows.append({"User ID": uid, "Name": name, "Phone": phone, "Booking": booking})
+
+    if not rows:
+        await update.message.reply_text("Нет данных для выгрузки.")
+        return
+
+    df = pd.DataFrame(rows)
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+
+    await update.message.reply_document(document=output, filename="users.xlsx")
+
+               
+             
 
 # === START ===
 
 app = Application.builder().token("7770514801:AAHuMKFNZ3ljTqs5qN9fcRE4UIAHPXyIbQY").build()
+
 
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
@@ -399,7 +465,11 @@ conv_handler = ConversationHandler(
     fallbacks=[]
 )
 
+
 app.add_handler(conv_handler)
+app.add_handler(CommandHandler("admin", admin_panel))
+app.add_handler(MessageHandler(filters.Regex("^📥"), export_users))
+
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(lambda: asyncio.run(send_weekend_reminders(app)), 'cron', day_of_week='sat,sun', hour=16, minute=0)
