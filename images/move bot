@@ -1,0 +1,409 @@
+# импорт библиотек
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime, timedelta
+import asyncio
+
+LANGUAGE, NAME, PHONE, MAIN_MENU, DIRECTION, SLOT_SELECT, STYLE_INFO, CANCEL_BOOKING = range(8)
+user_bookings = {}
+
+languages = ["Русский 🇷🇺", "English 🇬🇧", "Čeština 🇨🇿"]
+
+# локализованные словари
+texts = {
+    "Русский 🇷🇺": {
+        "choose_lang": "👋 Пожалуйста, выбери язык:",
+        "enter_name": "Пожалуйста, введите своё имя и фамилию.",
+        "send_phone": "Отправь, пожалуйста, свой номер телефона:",
+        "send_contact": "📱 Отправить номер",
+        "main_menu": "Отлично! Теперь ты можешь выбрать действие:",
+        "choose_style": "Выбери направление:",
+        "choose_time": "Выбери время:",
+        "booked": "Ты записан на",
+        "your_bookings": "Твои записи на ближайшую неделю:",
+        "no_bookings": "У тебя пока нет записей.",
+        "choose_info": "Выбери стиль, чтобы узнать подробности:",
+        "back": "🔙 Назад",
+        "home": "🏠 Главное меню",
+        "cancel_prompt": "Выбери запись, которую хочешь отменить:",
+        "cancel_success": "Запись отменена.",
+        "cancel_none": "У тебя нет записей для отмены.",
+        "cancel_button": "❌ Отменить запись",
+        "main_buttons": [["📅 Записаться", "📋 Мои записи"], ["📖 Детали о направлении", "❌ Отменить запись"]],
+        "remind_weekend": "🗓 Не забудь записаться на тренировки на следующую неделю!",
+        "remind_daybefore": "❗️Напоминаем: завтра у тебя тренировка. Если не отменишь и не придешь — запись сгорит!"
+    },
+    "English 🇬🇧": {
+        "choose_lang": "👋 Please choose a language:",
+        "enter_name": "Please enter your first and last name.",
+        "send_phone": "Please send your phone number:",
+        "send_contact": "📱 Send phone number",
+        "main_menu": "Great! Now you can choose what to do:",
+        "choose_style": "Choose a style:",
+        "choose_time": "Choose a time slot:",
+        "booked": "You are booked for",
+        "your_bookings": "Your bookings for the upcoming week:",
+        "no_bookings": "You have no bookings yet.",
+        "choose_info": "Choose a style to see details:",
+        "back": "🔙 Back",
+        "home": "🏠 Main Menu",
+        "cancel_prompt": "Select a booking to cancel:",
+        "cancel_success": "Booking cancelled.",
+        "cancel_none": "You have no bookings to cancel.",
+        "cancel_button": "❌ Cancel a booking",
+        "main_buttons": [["📅 Book a class", "📋 My bookings"], ["📖 About styles", "❌ Cancel a booking"]],
+        "remind_weekend": "🗓 Don't forget to book your dance classes for next week!",
+        "remind_daybefore": "❗️Reminder: you have class tomorrow. If you don't cancel and don't show up, it will be lost!"
+    },
+    "Čeština 🇨🇿": {
+        "choose_lang": "👋 Prosím, vyber si jazyk:",
+        "enter_name": "Zadej své jméno a příjmení.",
+        "send_phone": "Pošli prosím své telefonní číslo:",
+        "send_contact": "📱 Poslat číslo",
+        "main_menu": "Skvělé! Teď si můžeš vybrat, co chceš udělat:",
+        "choose_style": "Vyber směr:",
+        "choose_time": "Vyber si čas:",
+        "booked": "Jsi zapsaný na",
+        "your_bookings": "Tvé rezervace na příští týden:",
+        "no_bookings": "Zatím nemáš žádné rezervace.",
+        "choose_info": "Vyber styl a zjisti víc:",
+        "back": "🔙 Zpět",
+        "home": "🏠 Hlavní menu",
+        "cancel_prompt": "Vyber rezervaci ke zrušení:",
+        "cancel_success": "Rezervace byla zrušena.",
+        "cancel_none": "Nemáš žádné rezervace ke zrušení.",
+        "cancel_button": "❌ Zrušit rezervaci",
+        "main_buttons": [["📅 Rezervovat", "📋 Moje rezervace"], ["📖 Info o stylech", "❌ Zrušit rezervaci"]],
+        "remind_weekend": "🗓 Nezapomeň si rezervovat tréninky na další týden!",
+        "remind_daybefore": "❗️Připomínka: zítra máš trénink. Pokud nezrušíš a nepřijdeš, rezervace propadne!"
+    }
+}
+
+localized_days = {
+    "Русский 🇷🇺": ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"],
+    "English 🇬🇧": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+    "Čeština 🇨🇿": ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
+}
+weekday_index = {
+    "Понедельник": 0, "Вторник": 1, "Среда": 2, "Четверг": 3,
+    "Пятница": 4, "Суббота": 5, "Воскресенье": 6,
+    "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+    "Friday": 4, "Saturday": 5, "Sunday": 6,
+    "Pondělí": 0, "Úterý": 1, "Středa": 2, "Čtvrtek": 3,
+    "Pátek": 4, "Sobota": 5, "Neděle": 6,
+}
+style_info = {
+    "Girly Hip-Hop": {
+        "Русский 🇷🇺": [
+            "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/girly-hip-hop.jpeg?raw=true",
+            "<b>О стиле:</b> Энергичный танец с женственными акцентами, сильной подачей и уличным характером. Помогает раскрыть уверенность и харизму.\n<b>Для кого:</b> Для девушек, которые хотят танцевать ярко, свободно и уверенно, независимо от уровня.\n<b>Что взять:</b> Удобные кроссовки, свободные штаны или то в чём будет удобно двигаться, топ/ футболка, по желанию — оверсайз худи."
+        ],
+        "English 🇬🇧": [
+            "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/girly-hip-hop.jpeg?raw=true",
+            "<b>Style:</b> Energetic dance with feminine accents and street character. Helps boost confidence and charisma.\n<b>For whom:</b> Girls who want to dance brightly, freely, and confidently at any level.\n<b>What to bring:</b> Comfortable sneakers, loose pants or any comfortable clothes, top or T-shirt, optionally an oversized hoodie."
+        ],
+        "Čeština 🇨🇿": [
+            "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/girly-hip-hop.jpeg?raw=true",
+            "<b>Styl:</b> Energický tanec se ženskými prvky a pouličním charakterem. Pomáhá rozvíjet sebevědomí a charisma.\n<b>Pro koho:</b> Pro dívky, které chtějí tančit výrazně, svobodně a sebejistě, bez ohledu na úroveň.\n<b>Co si vzít:</b> Pohodlné tenisky, volné kalhoty nebo cokoliv pohodlného na pohyb, top nebo tričko, volitelně oversize mikinu."
+        ]
+    },
+    "Jazz Funk": {
+        "Русский 🇷🇺": [
+            "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/jazz-funk.jpeg?raw=true",
+            "<b>О стиле:</b> Взрывной микс движений. Яркий, эффектный стиль как в клипах популярных артистов.\n<b>Для кого:</b> Подойдет тем, кто хочет танцевать раскованно, ярко и с настроением.\n<b>Что взять:</b> Кроссовки, свободные штаны, топ или футболка."
+        ],
+        "English 🇬🇧": [
+            "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/jazz-funk.jpeg?raw=true",
+            "<b>Style:</b> Explosive mix of movements. Bright and flashy like in music videos.\n<b>For whom:</b> Perfect for those who want to dance freely and with flair.\n<b>What to bring:</b> Sneakers, loose pants, top or T-shirt."
+        ],
+        "Čeština 🇨🇿": [
+            "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/jazz-funk.jpeg?raw=true",
+            "<b>Styl:</b> Výbušná kombinace pohybů. Výrazný styl jako z hudebních videoklipů.\n<b>Pro koho:</b> Pro ty, kteří chtějí tančit uvolněně, výrazně a s náladou.\n<b>Co si vzít:</b> Tenisky, volné kalhoty, top nebo tričko."
+        ]
+    },
+
+    "Choreo": {
+    "Русский 🇷🇺": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/choreo.jpeg?raw=true",
+        "<b>О стиле:</b> Направление, которое выходит за рамки стиля. Развитие музыкальности, работа с ритмом и свободой движений.\n<b>Для кого:</b> Для всех, кто хочет уверенно танцевать и быстро осваивать новые движения.\n<b>Что взять:</b> Удобные кроссовки, спортивные штаны, топ/футболка."
+    ],
+    "English 🇬🇧": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/choreo.jpeg?raw=true",
+        "<b>Style:</b> Goes beyond style boundaries. Focuses on musicality, rhythm and movement freedom.\n<b>For whom:</b> Anyone who wants to dance confidently and learn fast.\n<b>What to bring:</b> Comfortable sneakers, sports pants, top or T-shirt."
+    ],
+    "Čeština 🇨🇿": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/choreo.jpeg?raw=true",
+        "<b>Styl:</b> Přesahuje běžné taneční styly. Rozvíjí muzikalitu, rytmus a svobodu pohybu.\n<b>Pro koho:</b> Pro každého, kdo chce tančit sebejistě a rychle se učit nové pohyby.\n<b>Co si vzít:</b> Pohodlné tenisky, sportovní kalhoty, top nebo tričko."
+    ]
+},
+"Contemporary": {
+    "Русский 🇷🇺": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/contemporary.jpeg?raw=true",
+        "<b>О стиле:</b> Пластичный и эмоциональный стиль, соединяющий танец, свободу движений и эмоций, работу с пространством.\n<b>Для кого:</b> Для тех, кто хочет развивать гибкость, выразительность и работать с эмоциями через танец.\n<b>Что взять:</b> Носочки, удобную, не сковывающую одежду."
+    ],
+    "English 🇬🇧": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/contemporary.jpeg?raw=true",
+        "<b>Style:</b> Fluid and emotional dance combining movement freedom and space awareness.\n<b>For whom:</b> For those who want to develop flexibility, expressiveness, and work with emotions through dance.\n<b>What to bring:</b> Socks and comfortable, non-restrictive clothing."
+    ],
+    "Čeština 🇨🇿": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/contemporary.jpeg?raw=true",
+        "<b>Styl:</b> Plynulý a emotivní styl spojující svobodu pohybu a práci s prostorem.\n<b>Pro koho:</b> Pro ty, kteří chtějí rozvíjet flexibilitu, výraz a emoce skrze tanec.\n<b>Co si vzít:</b> Ponožky a pohodlné, volné oblečení."
+    ]
+},
+"High Heels": {
+    "Русский 🇷🇺": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/hight-heels.jpeg?raw=true",
+        "<b>О стиле:</b> Танцы на каблуках, акцент на грацию, пластику и уверенную подачу. Помогает раскрыть женственность и улучшить походку.\n<b>Для кого:</b> Для девушек, которые хотят чувствовать себя уверенно и красиво двигаться на каблуках.\n<b>Что взять:</b> Устойчивые каблуки (лучше закрытые, на ремешке), удобная одежда, наколенники."
+    ],
+    "English 🇬🇧": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/hight-heels.jpeg?raw=true",
+        "<b>Style:</b> Dancing in heels with focus on grace, fluidity, and confidence.\n<b>For whom:</b> For girls who want to feel feminine and move confidently in heels.\n<b>What to bring:</b> Stable closed heels with straps, comfortable outfit, kneepads."
+    ],
+    "Čeština 🇨🇿": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/hight-heels.jpeg?raw=true",
+        "<b>Styl:</b> Tanec na podpatcích se zaměřením na ladnost, ženskost a sebevědomí.\n<b>Pro koho:</b> Pro dívky, které chtějí tančit jistě a krásně na podpatcích.\n<b>Co si vzít:</b> Stabilní podpatky (ideálně zavřené s páskem), pohodlné oblečení, chrániče na kolena."
+    ]
+},
+
+    "Frame Up": {
+    "Русский 🇷🇺": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/frame-up.jpeg?raw=true",
+        "<b>О стиле:</b> Женственный, пластичный стиль с акцентом на чувственность и уверенное владение телом.\n<b>Для кого:</b> Для девушек, которые хотят раскрепоститься, подчеркнуть женственность и научиться уверенно двигаться.\n<b>Что взять:</b> Туфли или носки, удобная одежда, наколенники обязательно."
+    ],
+    "English 🇬🇧": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/frame-up.jpeg?raw=true",
+        "<b>Style:</b> Feminine and sensual with strong body control and expression.\n<b>For whom:</b> For girls who want to boost confidence, express femininity, and feel in control.\n<b>What to bring:</b> Shoes or socks, comfortable clothes, kneepads are a must."
+    ],
+    "Čeština 🇨🇿": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/frame-up.jpeg?raw=true",
+        "<b>Styl:</b> Ženský a smyslný s důrazem na sebevědomý pohyb a kontrolu těla.\n<b>Pro koho:</b> Pro dívky, které chtějí zvýšit své sebevědomí a naučit se ovládat své tělo.\n<b>Co si vzít:</b> Boty nebo ponožky, pohodlné oblečení, chrániče na kolena (povinné)."
+    ]
+},
+"Mobility & Stretching": {
+    "Русский 🇷🇺": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/mobility-and-stretching.jpeg?raw=true",
+        "<b>О стиле:</b> Занятия на развитие гибкости, подвижности суставов и снятие напряжения. Мягкая проработка всего тела.\n<b>Для кого:</b> Подходит всем уровням. Особенно если хочешь улучшить самочувствие, осанку, подвижность и растяжку.\n<b>Что взять:</b> Спортивная форма, носки."
+    ],
+    "English 🇬🇧": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/mobility-and-stretching.jpeg?raw=true",
+        "<b>Style:</b> Gentle training focused on flexibility, joint mobility, and releasing tension.\n<b>For whom:</b> Suitable for all levels, especially those who want better posture, well-being, and range of motion.\n<b>What to bring:</b> Sportswear, socks."
+    ],
+    "Čeština 🇨🇿": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/mobility-and-stretching.jpeg?raw=true",
+        "<b>Styl:</b> Jemné cvičení na flexibilitu, mobilitu kloubů a uvolnění napětí.\n<b>Pro koho:</b> Vhodné pro všechny úrovně, zejména pokud chceš zlepšit držení těla a pohyblivost.\n<b>Co si vzít:</b> Sportovní oblečení, ponožky."
+    ]
+},
+"Morning Flow": {
+    "Русский 🇷🇺": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/morning-flow.jpeg?raw=true",
+        "<b>О стиле:</b> Мягкие утренние практики для пробуждения тела, снятия зажимов и бодрости на весь день.\n<b>Для кого:</b> Для любого уровня подготовки, чтобы начать день в хорошем ритме.\n<b>Что взять:</b> Комфортная одежда, носки."
+    ],
+    "English 🇬🇧": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/morning-flow.jpeg?raw=true",
+        "<b>Style:</b> Gentle morning movement to wake up the body and energize your day.\n<b>For whom:</b> For any level, ideal to start your day with a smooth rhythm.\n<b>What to bring:</b> Comfortable clothes, socks."
+    ],
+    "Čeština 🇨🇿": [
+        "https://github.com/HinakIvan/my-flutter-fire-base/blob/master/images/morning-flow.jpeg?raw=true",
+        "<b>Styl:</b> Jemné ranní lekce pro probuzení těla a získání energie na celý den.\n<b>Pro koho:</b> Pro všechny úrovně, ideální pro pozitivní start dne.\n<b>Co si vzít:</b> Pohodlné oblečení, ponožky."
+    ]
+}
+
+    # Пример завершён — остальные стили добавлю по той же структуре при следующем запросе,
+    # если хочешь — продолжу остальные 5 точно так же.
+}
+
+slot_options = {"Girly Hip-Hop": ["Понедельник 15:00"]}
+
+def get_next_weekday_date(day_name):
+    today = datetime.today()
+    target_index = weekday_index.get(day_name, 0)
+    current_index = today.weekday()
+    days_ahead = (target_index - current_index + 7) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    return (today + timedelta(days=days_ahead)).strftime("%d.%m")
+
+
+# === HANDLERS ===
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup([languages], resize_keyboard=True)
+    await update.message.reply_text("👋 Choose language / Выбери язык:", reply_markup=keyboard)
+    return LANGUAGE
+
+async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["lang"] = update.message.text
+    lang = context.user_data["lang"]
+    keyboard = ReplyKeyboardMarkup([[texts[lang]["back"]]], resize_keyboard=True)
+    await update.message.reply_text(texts[lang]["enter_name"], reply_markup=keyboard)
+    return NAME
+
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    if update.message.text == texts[lang]["back"]:
+        return await start(update, context)
+    context.user_data["name"] = update.message.text
+    button = KeyboardButton(texts[lang]["send_contact"], request_contact=True)
+    keyboard = ReplyKeyboardMarkup([[button], [texts[lang]["back"]]], resize_keyboard=True)
+    await update.message.reply_text(texts[lang]["send_phone"], reply_markup=keyboard)
+    return PHONE
+
+async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    if update.message.text == texts[lang]["back"]:
+        return await get_name(update, context)
+    if update.message.contact:
+        context.user_data["phone"] = update.message.contact.phone_number
+    return await get_main_menu(update, context)
+
+async def get_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    keyboard = ReplyKeyboardMarkup(texts[lang]["main_buttons"], resize_keyboard=True)
+    await update.message.reply_text(texts[lang]["main_menu"], reply_markup=keyboard)
+    return MAIN_MENU
+
+async def reservation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    styles = list(slot_options.keys())
+    keyboard = ReplyKeyboardMarkup([[s] for s in styles] + [[texts[lang]["home"]]], resize_keyboard=True)
+    await update.message.reply_text(texts[lang]["choose_style"], reply_markup=keyboard)
+    return DIRECTION
+
+async def select_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    style = update.message.text
+    context.user_data["selected_style"] = style
+    slots = slot_options.get(style, [])
+    buttons = []
+
+    for slot in slots:
+        try:
+            day_ru, time = slot.split()
+            date = get_next_weekday_date(day_ru)
+
+            # Найдём индекс дня по русскому
+            index = weekday_index.get(day_ru, 0)
+            # Переведём на нужный язык
+            day_localized = localized_days[lang][index]
+
+            buttons.append([f"{style} – {day_localized} {time} ({date})"])
+        except ValueError:
+            continue
+
+    buttons.append([texts[lang]["home"]])
+    await update.message.reply_text(texts[lang]["choose_time"], reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
+    return SLOT_SELECT
+
+
+async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    booking = update.message.text
+    user_id = update.message.from_user.id
+    user_bookings.setdefault(user_id, []).append(booking)
+    await update.message.reply_text(f"{texts[lang]['booked']} {booking}")
+    return await get_main_menu(update, context)
+
+async def show_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    user_id = update.message.from_user.id
+    bookings = user_bookings.get(user_id, [])
+    if bookings:
+        await update.message.reply_text(texts[lang]["your_bookings"] + "\n" + "\n".join(bookings))
+    else:
+        await update.message.reply_text(texts[lang]["no_bookings"])
+    return MAIN_MENU
+
+async def ask_for_direction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    styles = list(style_info.keys())
+    keyboard = ReplyKeyboardMarkup([[s] for s in styles] + [[texts[lang]["home"]]], resize_keyboard=True)
+    await update.message.reply_text(texts[lang]["choose_info"], reply_markup=keyboard)
+    return STYLE_INFO
+
+async def show_style_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "Русский 🇷🇺")
+    text = update.message.text
+
+    if text == texts[lang]["home"]:
+        keyboard = ReplyKeyboardMarkup(texts[lang]["main_buttons"], resize_keyboard=True)
+        await update.message.reply_text(texts[lang]["main_menu"], reply_markup=keyboard)
+        return MAIN_MENU
+
+    if text in style_info and lang in style_info[text]:
+        photo, desc = style_info[text][lang]
+        await update.message.reply_photo(photo=photo, caption=desc, parse_mode="HTML")
+    else:
+        await update.message.reply_text("Информация по выбранному стилю недоступна.")
+
+    return STYLE_INFO
+
+async def cancel_booking_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    user_id = update.message.from_user.id
+    bookings = user_bookings.get(user_id, [])
+    if not bookings:
+        await update.message.reply_text(texts[lang]["cancel_none"])
+        return MAIN_MENU
+    keyboard = ReplyKeyboardMarkup([[b] for b in bookings] + [[texts[lang]["home"]]], resize_keyboard=True)
+    await update.message.reply_text(texts[lang]["cancel_prompt"], reply_markup=keyboard)
+    return CANCEL_BOOKING
+
+async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data["lang"]
+    user_id = update.message.from_user.id
+    booking = update.message.text
+    if booking in user_bookings.get(user_id, []):
+        user_bookings[user_id].remove(booking)
+        await update.message.reply_text(texts[lang]["cancel_success"])
+    return await get_main_menu(update, context)
+
+# === REMINDERS ===
+
+async def send_weekend_reminders(app: Application):
+    for user_id, bookings in user_bookings.items():
+        chat_data = await app.bot.get_chat(user_id)
+        lang = "Русский 🇷🇺"
+        await app.bot.send_message(user_id, texts[lang]["remind_weekend"])
+
+async def send_day_before_reminders(app: Application):
+    tomorrow = datetime.today() + timedelta(days=1)
+    day_name = tomorrow.strftime("%d.%m")
+    for user_id, bookings in user_bookings.items():
+        for b in bookings:
+            if day_name in b:
+                lang = "Русский 🇷🇺"
+                await app.bot.send_message(user_id, texts[lang]["remind_daybefore"])
+
+# === START ===
+
+app = Application.builder().token("7770514801:AAHuMKFNZ3ljTqs5qN9fcRE4UIAHPXyIbQY").build()
+
+conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        LANGUAGE: [MessageHandler(filters.TEXT, choose_language)],
+        NAME: [MessageHandler(filters.TEXT, get_name)],
+        PHONE: [MessageHandler(filters.TEXT | filters.CONTACT, get_phone)],
+        MAIN_MENU: [
+            MessageHandler(filters.Regex("^📅"), reservation),
+            MessageHandler(filters.Regex("^📋"), show_bookings),
+            MessageHandler(filters.Regex("^📖"), ask_for_direction),
+            MessageHandler(filters.Regex("^❌"), cancel_booking_prompt),
+        ],
+        DIRECTION: [MessageHandler(filters.TEXT, select_slot)],
+        SLOT_SELECT: [MessageHandler(filters.TEXT, confirm_booking)],
+        STYLE_INFO: [MessageHandler(filters.TEXT, show_style_info)],
+        CANCEL_BOOKING: [MessageHandler(filters.TEXT, cancel_booking)]
+    },
+    fallbacks=[]
+)
+
+app.add_handler(conv_handler)
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(lambda: asyncio.run(send_weekend_reminders(app)), 'cron', day_of_week='sat,sun', hour=16, minute=0)
+scheduler.add_job(lambda: asyncio.run(send_day_before_reminders(app)), 'cron', hour=10)
+scheduler.start()
+
+app.run_polling()
